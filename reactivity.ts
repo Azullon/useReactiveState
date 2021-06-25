@@ -1,50 +1,54 @@
 import { observable, observe, unobserve } from '@nx-js/observer-util'
 import { FunctionalComponent, options } from 'preact'
-import { useEffect, useMemo, useState } from 'preact/hooks'
+import { Inputs, useEffect, useLayoutEffect, useMemo, useState } from 'preact/hooks'
 
 /**
  * Позволяет отслеживать реактивные зависимости компонента
  * @param component Функциональный компонент Preact
  * @return Переданный компонент в реактивной обёртке
  */
-function reactiveComponent<P>(
-  component: FunctionalComponent<P>
-): FunctionalComponent<P> {
-  let reactiveComponent: FunctionalComponent<P> = (props: P) => {
-    // Используем useState для получения возможности обновления компонента
-    const [, requestRerender] = useState({})
-    // create a memoized reactive wrapper of the original component
-    // at the very first run of the component function
-    const render = useMemo(
-      () =>
-        observe(component, {
-          // React (и Preact тоже) неплохо умеет склеивать setState
-          // Поэтому его можно спокойно вызвать хоть миллион раз(буквально)
-          scheduler: () => requestRerender({}),
-          lazy: true,
-        }),
-      // В оригинальной либе для React написано, что так надо, чтобы девтулзы не ломались
-      [component]
-    )
+export function reactiveComponent<P>(component: FunctionalComponent<P>): FunctionalComponent<P> {
+  let name = component.displayName || component.name
+  let result: { [key: string]: FunctionalComponent<P> } = {
+    [name]: (props: P) => {
+      // Используем useState для получения возможности обновления компонента
+      const [, requestRerender] = useState({})
+      // create a memoized reactive wrapper of the original component
+      // at the very first run of the component function
+      const render = useMemo(
+        () =>
+          observe(component, {
+            // React (и Preact тоже) неплохо умеет склеивать setState
+            // Поэтому его можно спокойно вызвать хоть миллион раз(буквально)
+            scheduler: () => requestRerender({}),
+            lazy: true,
+          }),
+        // В оригинальной либе для React написано, что так надо, чтобы девтулзы не ломались
+        [component]
+      )
 
-    // После анмаунта компонента очищаем зависимость
-    useEffect(() => {
-      return () => unobserve(render)
-    }, [])
+      // После анмаунта компонента очищаем зависимость
+      useEffect(() => {
+        return () => unobserve(render)
+      }, [])
 
-    return render(props)
+      return render(props)
+    },
   }
 
-  reactiveComponent.displayName = component.displayName || component.name
-
-  return reactiveComponent
+  result[name].displayName = name
+  return result[name]
 }
 
 //Используем option hooks для навешивания на компоненты преакта реактивности
 let oldVnode = options.vnode
+const cache = new WeakMap()
+window['componentCache'] = cache
 options.vnode = (vnode) => {
-  if (typeof vnode.type == 'function')
-    vnode.type = reactiveComponent(vnode.type as FunctionalComponent)
+  if (typeof vnode.type == 'function') {
+    if (!cache.has(vnode.type)) cache.set(vnode.type, reactiveComponent(vnode.type as FunctionalComponent))
+    vnode.type = cache.get(vnode.type)
+  }
   if (oldVnode) oldVnode(vnode)
 }
 
@@ -54,16 +58,27 @@ options.vnode = (vnode) => {
  * @return Возвращает реактивную версию состояния, при изменении этого состояния, возвращает измененную версию
  */
 
-export function useReactiveState<T extends Object>(
-  initialState: T | (() => T)
-) {
+export function useReactiveState<T extends Object>(initialState: T | (() => T)): T {
   let [state] = useState(() => {
-    if (typeof initialState == 'function')
-      initialState = (initialState as Function)()
+    if (typeof initialState == 'function') initialState = (initialState as Function)()
     //initialState может быть очищен GC при удалении компонента
     return observable(initialState as T)
   })
   return state
+}
+
+export function useReactiveLayoutEffect(callback: () => void, inputs?: Inputs) {
+  const [, requestRerender] = useState({})
+  const reactiveCallback = useMemo(
+    () =>
+      observe(callback, {
+        scheduler: () => requestRerender({}),
+        lazy: true,
+      }),
+    // В оригинальной либе для React написано, что так надо, чтобы девтулзы не ломались
+    [callback]
+  )
+  useLayoutEffect(reactiveCallback, inputs)
 }
 
 /**
@@ -71,6 +86,6 @@ export function useReactiveState<T extends Object>(
  * @param object Изначальное состояние
  * @return Возвращает реактивную версию состояния
  */
-export function reactive<T extends Object>(object: T) {
+export function reactive<T extends Object>(object: T): T {
   return observable(object)
 }
